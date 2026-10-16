@@ -1,0 +1,253 @@
+-- CVortex Graphics Mini | 1-10 | Armenia flag button
+-- Standalone local UI. Real graphics changes can be restricted by Roblox.
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local guiParent = player:WaitForChild("PlayerGui")
+local env = (type(getgenv) == "function" and getgenv()) or _G
+if type(env.CVortexGraphicsMiniUnload) == "function" then
+    pcall(env.CVortexGraphicsMiniUnload)
+end
+
+local alive = true
+local signalConnections = {}
+local function on(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(signalConnections, connection)
+    return connection
+end
+
+local qualitySettings
+local renderer
+pcall(function() qualitySettings = UserSettings():GetService("UserGameSettings") end)
+pcall(function() renderer = settings().Rendering end)
+
+local dark = Color3.fromRGB(21, 22, 26)
+local card = Color3.fromRGB(32, 33, 38)
+local hover = Color3.fromRGB(48, 49, 55)
+local outline = Color3.fromRGB(74, 75, 83)
+local light = Color3.fromRGB(236, 238, 243)
+local muted = Color3.fromRGB(168, 172, 182)
+local function new(class, props, parent)
+    local obj = Instance.new(class)
+    for key, val in pairs(props) do obj[key] = val end
+    if parent then obj.Parent = parent end
+    return obj
+end
+local function corners(obj, radius)
+    new("UICorner", { CornerRadius = UDim.new(0, radius) }, obj)
+end
+local function stroke(obj)
+    new("UIStroke", { Color = outline, Thickness = 1, Transparency = .25 }, obj)
+end
+local function text(parent, str, size, color, position, extent, bold)
+    return new("TextLabel", {
+        Name = "Label", Text = str, TextSize = size, TextColor3 = color,
+        BackgroundTransparency = 1, Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
+        Position = position, Size = extent,
+    }, parent)
+end
+
+local gui = new("ScreenGui", {
+    Name = "CVortexGraphicsMini", ResetOnSpawn = false,
+    IgnoreGuiInset = false, DisplayOrder = 10025, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, guiParent)
+
+-- Floating Armenia button: tricolor is drawn with Frames, avoiding emoji rendering issues.
+local flag = new("TextButton", {
+    Name = "ArmeniaButton", Text = "", AutoButtonColor = false,
+    BackgroundColor3 = card, BorderSizePixel = 0,
+    Position = UDim2.new(0, 14, 0.42, 0), Size = UDim2.fromOffset(45, 40),
+}, gui)
+corners(flag, 10)
+stroke(flag)
+local flagHolder = new("Frame", {
+    Name = "ArmeniaFlag", BackgroundTransparency = 1,
+    Size = UDim2.fromOffset(29, 19), Position = UDim2.new(.5, -14, .5, -9),
+    ClipsDescendants = true,
+}, flag)
+corners(flagHolder, 3)
+local armColors = {
+    Color3.fromRGB(217, 0, 18),
+    Color3.fromRGB(0, 51, 160),
+    Color3.fromRGB(242, 168, 0),
+}
+for i, col in ipairs(armColors) do
+    new("Frame", {
+        BackgroundColor3 = col, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 1/3 + .012, 0),
+        Position = UDim2.new(0, 0, (i - 1) / 3, 0),
+    }, flagHolder)
+end
+
+local panel = new("Frame", {
+    Name = "GraphicsPanel", BackgroundColor3 = dark, BorderSizePixel = 0,
+    Position = UDim2.new(.5, -168, .5, -128), Size = UDim2.fromOffset(336, 256),
+}, gui)
+corners(panel, 15)
+stroke(panel)
+
+text(panel, "GRAPHICS", 19, light, UDim2.fromOffset(18, 15), UDim2.fromOffset(245, 26), true)
+text(panel, "Выбери качество от 1 до 10", 12, muted, UDim2.fromOffset(19, 45), UDim2.fromOffset(290, 24), false)
+local exit = new("TextButton", {
+    Name = "Exit", Text = "×", TextSize = 22, Font = Enum.Font.Gotham,
+    TextColor3 = muted, BackgroundColor3 = card,
+    Position = UDim2.new(1, -45, 0, 14), Size = UDim2.fromOffset(30, 30), BorderSizePixel = 0,
+}, panel)
+corners(exit, 8)
+
+local buttons = {}
+local activeIndex = nil
+for i = 1, 10 do
+    local col, row = (i - 1) % 5, math.floor((i - 1) / 5)
+    local b = new("TextButton", {
+        Name = "Quality" .. i, Text = tostring(i), TextSize = 17,
+        TextColor3 = light, Font = Enum.Font.GothamMedium, BorderSizePixel = 0,
+        AutoButtonColor = false, BackgroundColor3 = card,
+        Position = UDim2.fromOffset(18 + col * 61, 86 + row * 55),
+        Size = UDim2.fromOffset(54, 47),
+    }, panel)
+    corners(b, 9)
+    buttons[i] = b
+end
+local status = text(panel, "", 12, muted, UDim2.fromOffset(18, 201), UDim2.fromOffset(302, 44), false)
+
+local function readSavedLevel()
+    if not qualitySettings then return nil end
+    local ok, setting = pcall(function() return qualitySettings.SavedQualityLevel end)
+    if not ok or not setting then return nil end
+    local num = tonumber(tostring(setting):match("QualityLevel(%d+)$"))
+    if num then return num end
+    return 0 -- Automatic
+end
+
+local function selectVisual(n)
+    activeIndex = n
+    for i, b in ipairs(buttons) do
+        b.BackgroundColor3 = (i == n) and hover or card
+        b.TextColor3 = (i == n) and Color3.new(1, 1, 1) or muted
+        local border = b:FindFirstChildOfClass("UIStroke")
+        if border then border:Destroy() end
+        if i == n then stroke(b) end
+    end
+end
+
+local function renderEnumForLevel(level)
+    if not renderer then return nil end
+    local ok, max = pcall(function() return renderer:GetMaxQualityLevel() end)
+    if not ok or type(max) ~= "number" or max < 2 then return nil end
+    local raw = math.floor((max - 1) * level / 10)
+    if level == 1 then raw = 1 end
+    if level == 10 then raw = max end
+    if raw == 20 and max >= 21 then raw = 21 end
+    raw = math.clamp(raw, 1, math.min(max, 21))
+    return Enum.QualityLevel["Level" .. string.format("%02d", raw)]
+end
+
+local function applyQuality(level)
+    local savedOK = false
+    local renderOK = false
+    local target = Enum.SavedQualitySetting["QualityLevel" .. tostring(level)]
+    if qualitySettings and target then
+        local ok = pcall(function() qualitySettings.SavedQualityLevel = target end)
+        if ok then
+            local check, stored = pcall(function() return qualitySettings.SavedQualityLevel end)
+            savedOK = check and stored == target
+        end
+    end
+    local renderEnum = renderEnumForLevel(level)
+    if renderEnum and renderer then
+        local ok = pcall(function() renderer.QualityLevel = renderEnum end)
+        if ok then
+            local readOK, actual = pcall(function() return renderer.QualityLevel end)
+            renderOK = readOK and actual == renderEnum
+        end
+    end
+
+    if savedOK or renderOK then selectVisual(level) end
+    if savedOK and renderOK then
+        status.Text = ("Уровень %d/10 применён"):format(level)
+    elseif savedOK then
+        status.Text = ("Сохранено %d/10. Roblox запретил менять рендер сейчас."):format(level)
+    elseif renderOK then
+        status.Text = ("Рендер: %d/10. Сохранение настройки недоступно."):format(level)
+    else
+        status.Text = "Roblox/Delta блокирует изменение качества."
+    end
+end
+
+for i, b in ipairs(buttons) do
+    on(b.MouseButton1Click, function()
+        if alive then applyQuality(i) end
+    end)
+end
+local selected = readSavedLevel()
+if selected and selected >= 1 and selected <= 10 then
+    selectVisual(selected)
+    status.Text = ("Сейчас сохранено: %d/10"):format(selected)
+elseif selected == 0 then
+    status.Text = "Сейчас: автоматическая графика"
+else
+    status.Text = "Выбери уровень графики"
+end
+
+local isOpen = true
+local function togglePanel()
+    isOpen = not isOpen
+    panel.Visible = isOpen
+end
+
+-- Touch/mouse dragging. A drag does not trigger the open/close action.
+local moving = false
+local inputStart
+local frameStart
+local dragInput
+local wasDrag = false
+on(flag.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        moving = true
+        wasDrag = false
+        inputStart = input.Position
+        frameStart = flag.Position
+        dragInput = input
+    end
+end)
+on(UIS.InputChanged, function(input)
+    if not moving then return end
+    if dragInput and dragInput.UserInputType == Enum.UserInputType.Touch and input ~= dragInput then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local delta = input.Position - inputStart
+    if delta.Magnitude > 7 then wasDrag = true end
+    if wasDrag then
+        flag.Position = UDim2.new(frameStart.X.Scale, frameStart.X.Offset + delta.X,
+            frameStart.Y.Scale, frameStart.Y.Offset + delta.Y)
+    end
+end)
+on(UIS.InputEnded, function(input)
+    if moving and (input == dragInput or (dragInput and
+        dragInput.UserInputType == Enum.UserInputType.MouseButton1 and
+        input.UserInputType == Enum.UserInputType.MouseButton1)) then
+        moving = false
+    end
+end)
+on(flag.MouseButton1Click, function()
+    if not alive then return end
+    if wasDrag then
+        wasDrag = false
+        return
+    end
+    togglePanel()
+end)
+
+local function unload()
+    if not alive then return end
+    alive = false
+    for _, conn in ipairs(signalConnections) do pcall(function() conn:Disconnect() end) end
+    pcall(function() gui:Destroy() end)
+    if env.CVortexGraphicsMiniUnload == unload then env.CVortexGraphicsMiniUnload = nil end
+end
+on(exit.MouseButton1Click, unload)
+env.CVortexGraphicsMiniUnload = unload
