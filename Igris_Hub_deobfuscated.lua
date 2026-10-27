@@ -9,12 +9,22 @@
 -- Captured variables use native Lua tables with a .value field.
 -- The original external Rayfield load remains; its remote code is not bundled or audited here.
 -- Validation: Lua 5.1 syntax; matching initialization plus 33 callback cases in a mock.
+-- Regression: menu initializes when Remotes, Crafting, Inventory or individual crafting remotes are missing.
 -- Network requests and scheduled background tasks were mocked. Not tested inside Roblox.
 
 local env = getfenv and getfenv() or _ENV
 local unpackValues = unpack or table.unpack
 local selectValues = select
 local functions = {}
+local craftingAvailable = false
+
+-- A missing game-specific remote must not prevent the UI from opening.
+local function findOptionalChild(parent, name)
+    if parent == nil then
+        return nil
+    end
+    return parent:FindFirstChild(name)
+end
 
 -- Pathfinding Monster
 -- UGC_MonsterCham
@@ -352,20 +362,17 @@ functions.main = function(captures)
             Y,
         })
         he = Pe(re)
-        Pe = C.WaitForChild
-        Pe = Pe(C, 'Remotes')
+        Pe = findOptionalChild(C, 'Remotes')
         de = functions.fn_211743({
             w,
             y,
             g,
         })
-        he = Pe.WaitForChild
-        he = he(Pe, 'Crafting')
-        re = Pe.WaitForChild
-        re = re(Pe, 'Inventory')
+        he = findOptionalChild(Pe, 'Crafting')
+        re = findOptionalChild(Pe, 'Inventory')
         we = {
         }
-        ze = he.WaitForChild
+        ze = findOptionalChild
         Ce = functions.fn_1463441({
             we,
             B,
@@ -378,7 +385,7 @@ functions.main = function(captures)
         fe = {
         }
         fe.value = ze
-        ze = he.WaitForChild
+        ze = findOptionalChild
         ze = ze(he, 'GetRecipes')
         Be = functions.fn_14663644({
             Z,
@@ -389,7 +396,7 @@ functions.main = function(captures)
         Oe = {
         }
         Oe.value = ze
-        ze = re.WaitForChild
+        ze = findOptionalChild
         ge = {
         }
         Xe = {
@@ -944,6 +951,14 @@ functions.main = function(captures)
         }
         ce = Ne.CreateTab
         ce = ce(Ne, 'Auto-Craft', 4483362458)
+        craftingAvailable = fe.value ~= nil and Oe.value ~= nil and Fe.value ~= nil
+        if not craftingAvailable then
+            ce:CreateParagraph({
+                Title = 'Auto-Craft unavailable',
+                Content = 'Required crafting or inventory remotes were not found in this server. Visuals and Player controls are still available. If the game is still loading, run the script again after joining fully.',
+            })
+            env.warn('[IGRIS] Auto-Craft unavailable: expected Remotes.Crafting.CraftItem, Remotes.Crafting.GetRecipes and Remotes.Inventory.GatherMaterial. Menu initialization continues.')
+        end
         xe = {
         }
         Ae = functions.fn_12582954({
@@ -1579,6 +1594,9 @@ functions.fn_2393450 = function(captures)
         local X, flow, results
         flow = 2393450
         flow = captures[1].value
+        if flow == nil then
+            return {}
+        end
         X = flow.InvokeServer
         results = {
             X(flow),
@@ -3431,6 +3449,14 @@ end
 -- No recipe selected. Check F9 for available IDs.
 functions.onAutoCraft = function(captures)
     return function(arg1, arg2)
+        if not craftingAvailable then
+            captures[2].value:Notify({
+                Title = 'Auto-Craft unavailable',
+                Content = 'Required game remotes are missing in this server. Auto-Craft was not started.',
+                Duration = 6,
+            })
+            return
+        end
         local args = { arg1, arg2 }
         local B, C, D, J, M, N, R, U, V, X, Z, a, c, flow, g, i, results, v, w, x, y
         flow = 7511128
