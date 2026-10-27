@@ -1,0 +1,554 @@
+-- CVortex v3 | WindUI | Player ESP + Local ESP + Smooth Aimbot
+-- Based on the IGRIS deobfuscated Player Chams feature.
+-- Only other players and the local player are highlighted.
+-- Controls: mobile AIM button toggles aiming; on PC hold right mouse button.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then return end
+
+local env = (type(getgenv) == "function" and getgenv()) or _G
+if type(env.CVortexPlayerAimCleanup) == "function" then
+    pcall(env.CVortexPlayerAimCleanup)
+end
+-- Also stop the earlier IGRIS version to prevent overlapping camera writers.
+if type(env.IgrisPlayerAimCleanup) == "function" then
+    pcall(env.IgrisPlayerAimCleanup)
+end
+
+local S = {
+    ESP = false,
+    LocalESP = false,
+    LocalFill = Color3.fromRGB(80, 180, 255),
+    LocalOutline = Color3.fromRGB(170, 220, 255),
+    Fill = Color3.fromRGB(0, 200, 100),
+    Outline = Color3.fromRGB(120, 255, 170),
+    FillTransparency = 0.55,
+    OutlineTransparency = 0,
+
+    AimEnabled = false,
+    WallCheck = true,
+    ShowFOV = true,
+    FOV = 145,
+    Speed = 10,
+    Duration = 0, -- 0 = until the activation is released or turned off
+    AimPart = "Head",
+}
+
+local alive = true
+local connections = {}
+local highlights = {}
+local currentTarget = nil
+local activation = nil -- nil, "touch", or "mouse"
+local aimStartTime = 0
+local espTimer = 0
+local windWindow = nil
+
+local function connect(signal, callback)
+    local conn = signal:Connect(callback)
+    table.insert(connections, conn)
+    return conn
+end
+
+local function removeESP(player)
+    local old = highlights[player]
+    highlights[player] = nil
+    if old then pcall(function() old:Destroy() end) end
+end
+
+local function refreshESP(player)
+    if not alive then return end
+    local selfPlayer = player == LocalPlayer
+    local enabled = selfPlayer and S.LocalESP or (not selfPlayer and S.ESP)
+    if not enabled then removeESP(player); return end
+
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not character or not humanoid or humanoid.Health <= 0 then
+        removeESP(player)
+        return
+    end
+
+    local outline = highlights[player]
+    if not outline or not outline.Parent or outline.Adornee ~= character then
+        removeESP(player)
+        outline = Instance.new("Highlight")
+        outline.Name = selfPlayer and "CVortex_LocalESP" or "CVortex_PlayerESP"
+        outline.Adornee = character
+        outline.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        outline.Parent = character
+        highlights[player] = outline
+    end
+    outline.Enabled = true
+    outline.FillColor = selfPlayer and S.LocalFill or S.Fill
+    outline.OutlineColor = selfPlayer and S.LocalOutline or S.Outline
+    outline.FillTransparency = S.FillTransparency
+    outline.OutlineTransparency = S.OutlineTransparency
+end
+
+local function refreshAllESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        refreshESP(player)
+    end
+end
+
+local overlay = Instance.new("ScreenGui")
+overlay.Name = "CVortexAimOverlay"
+overlay.ResetOnSpawn = false
+overlay.IgnoreGuiInset = true
+overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+overlay.DisplayOrder = 2500
+overlay.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "FOVCircle"
+fovCircle.Parent = overlay
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.BackgroundTransparency = 1
+fovCircle.Size = UDim2.fromOffset(2 * S.FOV, 2 * S.FOV)
+fovCircle.Visible = false
+local roundFOV = Instance.new("UICorner")
+roundFOV.CornerRadius = UDim.new(1, 0)
+roundFOV.Parent = fovCircle
+local fovOutline = Instance.new("UIStroke")
+fovOutline.Color = Color3.fromRGB(55, 145, 255)
+fovOutline.Thickness = 1.5
+fovOutline.Transparency = 0.2
+fovOutline.Parent = fovCircle
+
+local aimButton = Instance.new("TextButton")
+aimButton.Name = "AIMButton"
+aimButton.Parent = overlay
+aimButton.Position = UDim2.fromOffset(12, 240)
+aimButton.Size = UDim2.fromOffset(72, 36)
+aimButton.BackgroundColor3 = Color3.fromRGB(29, 30, 34)
+aimButton.TextColor3 = Color3.fromRGB(244, 244, 247)
+aimButton.Text = "AIM OFF"
+aimButton.TextSize = 12
+aimButton.Font = Enum.Font.GothamSemibold
+aimButton.AutoButtonColor = false
+aimButton.Active = true
+local buttonCorner = Instance.new("UICorner")
+buttonCorner.CornerRadius = UDim.new(0, 10)
+buttonCorner.Parent = aimButton
+local buttonStroke = Instance.new("UIStroke")
+buttonStroke.Color = Color3.fromRGB(103, 105, 110)
+buttonStroke.Transparency = 0.3
+buttonStroke.Thickness = 1
+buttonStroke.Parent = aimButton
+
+local function updateOverlay()
+    fovCircle.Visible = alive and S.AimEnabled and S.ShowFOV
+    fovCircle.Size = UDim2.fromOffset(S.FOV * 2, S.FOV * 2)
+    aimButton.Visible = alive and S.AimEnabled
+    aimButton.Text = activation and "AIM ON" or "AIM OFF"
+    aimButton.BackgroundColor3 = activation and Color3.fromRGB(66, 67, 74)
+        or Color3.fromRGB(29, 30, 34)
+end
+
+local function stopAim()
+    activation = nil
+    currentTarget = nil
+    updateOverlay()
+end
+
+local function startAim(mode)
+    if not alive or not S.AimEnabled then return end
+    activation = mode
+    currentTarget = nil
+    aimStartTime = os.clock()
+    updateOverlay()
+end
+
+-- A single input ownership mode avoids mouse release cancelling mobile AIM.
+local dragInput, dragStart, dragFrom, dragMoved = nil, nil, nil, false
+connect(aimButton.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+        dragStart = input.Position
+        dragFrom = aimButton.Position
+        dragMoved = false
+    end
+end)
+connect(UserInputService.InputChanged, function(input)
+    if not dragInput or not dragStart then return end
+    if input ~= dragInput and not (dragInput.UserInputType == Enum.UserInputType.MouseButton1
+        and input.UserInputType == Enum.UserInputType.MouseMovement) then return end
+    local delta = input.Position - dragStart
+    if delta.Magnitude > 8 then dragMoved = true end
+    if dragMoved then
+        local camera = Workspace.CurrentCamera
+        local viewport = camera and camera.ViewportSize or Vector2.new(600, 400)
+        aimButton.Position = UDim2.fromOffset(
+            math.clamp(dragFrom.X.Offset + delta.X, 3, math.max(3, viewport.X - 76)),
+            math.clamp(dragFrom.Y.Offset + delta.Y, 3, math.max(3, viewport.Y - 40))
+        )
+    end
+end)
+connect(UserInputService.InputEnded, function(input)
+    if dragInput and (input == dragInput
+        or (dragInput.UserInputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseButton1)) then
+        local clicked = not dragMoved
+        dragInput = nil
+        dragStart = nil
+        if clicked and S.AimEnabled then
+            if activation == "touch" then
+                stopAim()
+            else
+                startAim("touch")
+            end
+        end
+    end
+    if input.UserInputType == Enum.UserInputType.MouseButton2
+        and activation == "mouse" then
+        stopAim()
+    end
+end)
+connect(UserInputService.InputBegan, function(input, processed)
+    if not S.AimEnabled or UserInputService:GetFocusedTextBox() then return end
+    -- Some games mark RMB as processed for their own camera controller.
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        startAim("mouse")
+    end
+end)
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.IgnoreWater = true
+
+local function targetPartFor(player)
+    if player == LocalPlayer or not player.Parent then return nil end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return nil end
+    if S.AimPart == "Body" then
+        return character:FindFirstChild("UpperTorso")
+            or character:FindFirstChild("Torso")
+            or character:FindFirstChild("HumanoidRootPart")
+    end
+    return character:FindFirstChild("Head")
+        or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function hasLineOfSight(camera, player, part)
+    if not S.WallCheck then return true end
+    local localCharacter = LocalPlayer.Character
+    rayParams.FilterDescendantsInstances = localCharacter and {localCharacter} or {}
+    local origin = camera.CFrame.Position
+    local direction = part.Position - origin
+    if direction.Magnitude <= 0.05 then return true end
+    local hit = Workspace:Raycast(origin, direction, rayParams)
+    return hit == nil or (player.Character ~= nil
+        and hit.Instance:IsDescendantOf(player.Character))
+end
+
+local function targetScreenDistance(camera, player, extraRadius)
+    local part = targetPartFor(player)
+    if not part then return nil end
+    local screen, onScreen = camera:WorldToViewportPoint(part.Position)
+    if not onScreen or screen.Z <= 0 then return nil end
+    local center = camera.ViewportSize * 0.5
+    local dist = (Vector2.new(screen.X, screen.Y) - center).Magnitude
+    if dist > S.FOV + (extraRadius or 0) then return nil end
+    if not hasLineOfSight(camera, player, part) then return nil end
+    return part, dist
+end
+
+local function findClosestTarget(camera)
+    local bestPlayer = nil
+    local bestDistance = math.huge
+    for _, other in ipairs(Players:GetPlayers()) do
+        if other ~= LocalPlayer then
+            local part, distance = targetScreenDistance(camera, other, 0)
+            if part and distance < bestDistance then
+                bestPlayer = other
+                bestDistance = distance
+            end
+        end
+    end
+    return bestPlayer
+end
+
+local function updateAim(dt)
+    if not alive or not S.AimEnabled or not activation then return end
+    if S.Duration > 0 and os.clock() - aimStartTime >= S.Duration then
+        stopAim()
+        return
+    end
+    local camera = Workspace.CurrentCamera
+    if not camera or dt <= 0 then return end
+
+    -- Keep the current target with a little FOV hysteresis to prevent jitter.
+    local part = currentTarget and targetScreenDistance(camera, currentTarget, S.FOV * 0.12)
+    if not part then
+        currentTarget = findClosestTarget(camera)
+        part = currentTarget and targetScreenDistance(camera, currentTarget, 0)
+    end
+    if not part then return end
+
+    local current = camera.CFrame
+    local direction = part.Position - current.Position
+    if direction.Magnitude <= 0.1 then return end
+
+    -- Exponential smoothing independent of the client's rendering FPS.
+    -- Speed 1 is gentle, 20 nearly instantaneous. The camera position stays unchanged.
+    local response = 0.65 + S.Speed * 1.65
+    local alpha = math.clamp(1 - math.exp(-response * math.min(dt, 0.1)), 0, 1)
+    local desired = CFrame.lookAt(current.Position, part.Position, Vector3.yAxis)
+    camera.CFrame = current:Lerp(desired, alpha)
+end
+
+local renderName = "CVortex_PlayerESP_Aimbot_Render"
+RunService:BindToRenderStep(renderName, Enum.RenderPriority.Camera.Value + 30, updateAim)
+
+connect(RunService.Heartbeat, function(dt)
+    if not alive then return end
+    espTimer = espTimer + dt
+    if espTimer >= 0.35 then
+        espTimer = 0
+        refreshAllESP()
+    end
+end)
+connect(Players.PlayerRemoving, function(player)
+    removeESP(player)
+    if player == currentTarget then currentTarget = nil end
+end)
+local function listenToPlayer(player)
+    connect(player.CharacterAdded, function()
+        if player == currentTarget then currentTarget = nil end
+        task.defer(function()
+            if alive then refreshESP(player) end
+        end)
+    end)
+end
+connect(Players.PlayerAdded, listenToPlayer)
+for _, player in ipairs(Players:GetPlayers()) do
+    listenToPlayer(player)
+end
+
+local function cleanup()
+    if not alive then return end
+    alive = false
+    pcall(function() RunService:UnbindFromRenderStep(renderName) end)
+    for player in pairs(highlights) do removeESP(player) end
+    for _, conn in ipairs(connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(connections)
+    pcall(function() overlay:Destroy() end)
+    if windWindow then
+        local oldWindow = windWindow
+        windWindow = nil
+        pcall(function() oldWindow:Destroy() end)
+    end
+    if env.CVortexPlayerAimCleanup == cleanup then
+        env.CVortexPlayerAimCleanup = nil
+    end
+end
+env.CVortexPlayerAimCleanup = cleanup
+
+
+-- WindUI replaces the Rayfield-only view. Core ESP and aim systems above remain intact.
+local okWindUI, WindUI = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+end)
+if not okWindUI or type(WindUI) ~= "table" then
+    warn("CVortex: Could not load WindUI.")
+    cleanup()
+    return
+end
+
+local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local cam = Workspace.CurrentCamera
+local viewport = cam and cam.ViewportSize or Vector2.new(660, 500)
+local menuWidth = IS_MOBILE and math.clamp(viewport.X - 20, 290, 460) or 620
+local menuHeight = IS_MOBILE and math.clamp(viewport.Y - 76, 330, 500) or 500
+local windowOk, windowError = pcall(function()
+    local window = WindUI:CreateWindow({
+        Title = "CVortex",
+        Author = "CVortex",
+        Icon = "crosshair",
+        Theme = "Dark",
+        HideSearchBar = false,
+        NewElements = true,
+        MinSize = IS_MOBILE and Vector2.new(290, 300) or Vector2.new(500, 350),
+        Size = UDim2.fromOffset(menuWidth, menuHeight),
+        ToggleKey = Enum.KeyCode.RightShift,
+        OpenButton = {
+            Enabled = true,
+            Title = "CVortex",
+            Draggable = true,
+            OnlyMobile = IS_MOBILE,
+            Scale = 0.65,
+        },
+    })
+    if not window then error("WindUI did not return a window") end
+    windWindow = window
+    if type(window.OnDestroy) == "function" then
+        window:OnDestroy(function()
+            if alive then cleanup() end
+        end)
+    end
+
+    local visuals = window:Tab({Title = "ESP", Icon = "eye"})
+    visuals:Section({Title = "Player Highlights"})
+    visuals:Toggle({
+        Title = "Player ESP (others)", Value = S.ESP, Flag = "CV3_PlayerESP",
+        Callback = function(value)
+            S.ESP = value == true
+            refreshAllESP()
+        end,
+    })
+    visuals:Toggle({
+        Title = "Local Player ESP (self)", Value = S.LocalESP, Flag = "CV3_LocalESP",
+        Callback = function(value)
+            S.LocalESP = value == true
+            refreshESP(LocalPlayer)
+        end,
+    })
+    visuals:Section({Title = "Player Colors"})
+    visuals:Colorpicker({
+        Title = "Player Fill Color", Default = S.Fill, Flag = "CV3_PlayerFill",
+        Callback = function(value)
+            if typeof(value) == "Color3" then
+                S.Fill = value
+                refreshAllESP()
+            end
+        end,
+    })
+    visuals:Colorpicker({
+        Title = "Player Outline Color", Default = S.Outline, Flag = "CV3_PlayerOutline",
+        Callback = function(value)
+            if typeof(value) == "Color3" then
+                S.Outline = value
+                refreshAllESP()
+            end
+        end,
+    })
+    visuals:Section({Title = "Local Colors"})
+    visuals:Colorpicker({
+        Title = "Local Fill Color", Default = S.LocalFill, Flag = "CV3_LocalFill",
+        Callback = function(value)
+            if typeof(value) == "Color3" then
+                S.LocalFill = value
+                refreshESP(LocalPlayer)
+            end
+        end,
+    })
+    visuals:Colorpicker({
+        Title = "Local Outline Color", Default = S.LocalOutline, Flag = "CV3_LocalOutline",
+        Callback = function(value)
+            if typeof(value) == "Color3" then
+                S.LocalOutline = value
+                refreshESP(LocalPlayer)
+            end
+        end,
+    })
+    visuals:Section({Title = "Appearance"})
+    visuals:Slider({
+        Title = "Fill Transparency",
+        Value = {Min = 0, Max = 1, Default = S.FillTransparency}, Step = 0.05,
+        Flag = "CV3_FillTransparency",
+        Callback = function(value)
+            S.FillTransparency = math.clamp(tonumber(value) or 0.55, 0, 1)
+            refreshAllESP()
+        end,
+    })
+    visuals:Slider({
+        Title = "Outline Transparency",
+        Value = {Min = 0, Max = 1, Default = S.OutlineTransparency}, Step = 0.05,
+        Flag = "CV3_OutlineTransparency",
+        Callback = function(value)
+            S.OutlineTransparency = math.clamp(tonumber(value) or 0, 0, 1)
+            refreshAllESP()
+        end,
+    })
+
+    local aimTab = window:Tab({Title = "Aimbot", Icon = "crosshair"})
+    aimTab:Section({Title = "Main"})
+    aimTab:Toggle({
+        Title = "Enable Aimbot", Value = S.AimEnabled, Flag = "CV3_AimEnabled",
+        Callback = function(value)
+            S.AimEnabled = value == true
+            if not S.AimEnabled then stopAim() end
+            updateOverlay()
+        end,
+    })
+    aimTab:Toggle({
+        Title = "Wall Check", Value = S.WallCheck, Flag = "CV3_WallCheck",
+        Callback = function(value)
+            S.WallCheck = value == true
+            currentTarget = nil
+        end,
+    })
+    aimTab:Dropdown({
+        Title = "Aim Part", Values = {"Head", "Body"}, Value = S.AimPart,
+        Flag = "CV3_AimPart",
+        Callback = function(value)
+            local option = type(value) == "table" and value[1] or value
+            if option == "Head" or option == "Body" then
+                S.AimPart = option
+                currentTarget = nil
+            end
+        end,
+    })
+    aimTab:Section({Title = "FOV"})
+    aimTab:Toggle({
+        Title = "Show FOV Circle", Value = S.ShowFOV, Flag = "CV3_ShowFOV",
+        Callback = function(value)
+            S.ShowFOV = value == true
+            updateOverlay()
+        end,
+    })
+    aimTab:Slider({
+        Title = "FOV Radius",
+        Value = {Min = 25, Max = 400, Default = S.FOV}, Step = 5,
+        Flag = "CV3_FOV",
+        Callback = function(value)
+            S.FOV = math.clamp(tonumber(value) or 145, 25, 400)
+            updateOverlay()
+            currentTarget = nil
+        end,
+    })
+    aimTab:Section({Title = "Smooth Aim"})
+    aimTab:Slider({
+        Title = "Aim Speed",
+        Value = {Min = 1, Max = 20, Default = S.Speed}, Step = 1,
+        Flag = "CV3_AimSpeed",
+        Callback = function(value)
+            S.Speed = math.clamp(tonumber(value) or 10, 1, 20)
+        end,
+    })
+    aimTab:Slider({
+        Title = "Aim Duration (0 = unlimited)",
+        Value = {Min = 0, Max = 10, Default = S.Duration}, Step = 0.5,
+        Flag = "CV3_AimDuration",
+        Callback = function(value)
+            S.Duration = math.clamp(tonumber(value) or 0, 0, 10)
+        end,
+    })
+    aimTab:Button({
+        Title = "Stop Aiming",
+        Callback = stopAim,
+    })
+
+    local settings = window:Tab({Title = "Settings", Icon = "settings"})
+    settings:Button({
+        Title = "Unload CVortex",
+        Callback = cleanup,
+    })
+end)
+if not windowOk then
+    warn("CVortex: WindUI interface error:", windowError)
+    cleanup()
+    return
+end
+
+updateOverlay()
+refreshAllESP()
